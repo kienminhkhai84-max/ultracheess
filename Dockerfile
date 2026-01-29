@@ -1,19 +1,19 @@
 FROM python:3.9-slim
 
-# Cài đặt Stockfish và các thư viện cần thiết cho OpenCV xử lý ảnh
+# Cập nhật và cài đặt Stockfish cùng các thư viện đồ họa mới nhất
 RUN apt-get update && apt-get install -y \
     stockfish \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy toàn bộ code vào container
+# Copy toàn bộ code vào
 COPY . .
 
 # Cài đặt thư viện Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Railway sẽ gán cổng qua biến $PORT
+# Chạy server
 CMD gunicorn --bind 0.0.0.0:$PORT server:app
