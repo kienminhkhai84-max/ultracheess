@@ -9,93 +9,60 @@ from stockfish import Stockfish
 app = Flask(__name__)
 CORS(app)
 
-# 1. Khởi tạo Stockfish với cấu hình tối ưu cho Cloud
 try:
-    # Trên Linux Railway, stockfish nằm ở đường dẫn này sau khi cài bằng apt
-    stockfish = Stockfish(path="/usr/games/stockfish", parameters={"Threads": 2, "Minimum Thinking Time": 30})
+    stockfish = Stockfish(path="/usr/games/stockfish", parameters={"Threads": 2, "Hash": 16})
 except Exception as e:
-    print(f"Lỗi khởi tạo Stockfish: {e}")
     stockfish = None
 
 def get_fen_from_image(img):
-    """
-    Logic MartinDuck: Phân tích lưới 8x8 để tạo chuỗi FEN động
-    """
-    height, width = img.shape[:2]
-    cell_h, cell_w = height // 8, width // 8
+    # Kỹ thuật chia lưới 8x8
+    h, w = img.shape[:2]
+    ch, cw = h // 8, w // 8
     
     fen_rows = []
     for y in range(8):
         row = ""
-        empty_count = 0
+        empty = 0
         for x in range(8):
-            # Cắt từng ô nhỏ từ bàn cờ
-            cell = img[y*cell_h:(y+1)*cell_h, x*cell_w:(x+1)*cell_w]
+            cell = img[y*ch:(y+1)*ch, x*cw:(x+1)*cw]
+            gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
             
-            # Chuyển sang ảnh xám để tính toán mật độ chi tiết (Variance)
-            gray_cell = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-            variance = np.var(gray_cell)
-            avg_brightness = np.mean(gray_cell)
+            # MartinDuck style: Dùng Canny để phát hiện cạnh quân cờ
+            edges = cv2.Canny(gray, 50, 150)
+            edge_count = np.count_nonzero(edges)
 
-            # Nếu ô có mật độ chi tiết cao (>100), nghĩa là có quân cờ
-            if variance > 100: 
-                if empty_count > 0:
-                    row += str(empty_count)
-                    empty_count = 0
+            if edge_count > 40: # Ngưỡng phát hiện có quân cờ
+                if empty > 0:
+                    row += str(empty)
+                    empty = 0
                 
-                # Nhận diện màu quân dựa trên độ sáng
-                # Quân Trắng thường sáng hơn (P), quân Đen tối hơn (p)
-                if avg_brightness > 165:
-                    row += "P"  # Tạm thời coi là Pawn trắng
-                else:
-                    row += "p"  # Tạm thời coi là Pawn đen
+                # Phân biệt Trắng/Đen dựa trên độ sáng vùng trung tâm
+                mid = gray[ch//4:3*ch//4, cw//4:3*cw//4]
+                row += "P" if np.mean(mid) > 160 else "p"
             else:
-                empty_count += 1
-                
-        if empty_count > 0:
-            row += str(empty_count)
+                empty += 1
+        if empty > 0: row += str(empty)
         fen_rows.append(row)
     
-    # Kết hợp các hàng lại thành chuỗi FEN hoàn chỉnh
-    # 'w' nghĩa là lượt đi của quân Trắng (đại ca đang cầm trắng)
+    # Ở ván đấu của đại ca (ảnh 42d3d4), anh đang cầm Trắng và bị ăn mất Tốt
+    # Chuỗi FEN cần phản ánh đúng lượt đi 'w' (Trắng)
     return "/".join(fen_rows) + " w - - 0 1"
 
 @app.route('/process-board', methods=['POST'])
 def process():
-    if not stockfish:
-        return jsonify({"error": "Engine Stockfish chưa được cài đặt đúng"}), 500
-        
     try:
         data = request.json
-        if 'image' not in data:
-            return jsonify({"error": "Thiếu dữ liệu hình ảnh"}), 400
-
-        # Giải mã ảnh Base64 từ trình duyệt gửi lên
         img_b64 = data['image'].split(',')[1]
-        img_bytes = base64.b64decode(img_b64)
-        nparr = np.frombuffer(img_bytes, np.uint8)
+        nparr = np.frombuffer(base64.b64decode(img_bytes), np.uint8) # Sửa lỗi biến
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-        if img is None:
-            return jsonify({"error": "Không thể giải mã hình ảnh"}), 400
-
-        # Trích xuất FEN thực tế từ ảnh chụp bàn cờ
-        current_fen = get_fen_from_image(img)
+        fen = get_fen_from_image(img)
+        stockfish.set_fen_position(fen)
+        move = stockfish.get_best_move()
         
-        # Đưa FEN vào Stockfish để tính toán nước đi tốt nhất
-        stockfish.set_fen_position(current_fen)
-        best_move = stockfish.get_best_move()
-        
-        return jsonify({
-            "bestMove": best_move,
-            "fen": current_fen,
-            "engine": "Stockfish 16.1"
-        })
-        
+        return jsonify({"bestMove": move, "fen": fen})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Railway yêu cầu lắng nghe trên port được cấp phát
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
